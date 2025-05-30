@@ -18,6 +18,7 @@
 package org.apache.spark.rdd
 
 import java.util.Random
+import java.util.UUID
 
 import scala.collection.{mutable, Map}
 import scala.collection.mutable.ArrayBuffer
@@ -45,13 +46,12 @@ import org.apache.spark.partial.CountEvaluator
 import org.apache.spark.partial.GroupedCountEvaluator
 import org.apache.spark.partial.PartialResult
 import org.apache.spark.resource.ResourceProfile
+import org.apache.spark.s3offload.S3Utils
 import org.apache.spark.storage.{RDDBlockId, StorageLevel}
 import org.apache.spark.util.ArrayImplicits._
 import org.apache.spark.util.Utils
-import org.apache.spark.util.collection.{ExternalAppendOnlyMap, OpenHashMap,
-  Utils => collectionUtils}
-import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, PoissonSampler,
-  SamplingUtils, XORShiftRandom}
+import org.apache.spark.util.collection.{ExternalAppendOnlyMap, OpenHashMap, Utils => collectionUtils}
+import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, PoissonSampler, SamplingUtils, XORShiftRandom}
 
 /**
  * A Resilient Distributed Dataset (RDD), the basic abstraction in Spark. Represents an immutable,
@@ -1057,6 +1057,31 @@ abstract class RDD[T: ClassTag](
     val results = sc.runJob(this, (iter: Iterator[T]) => iter.toArray)
     import org.apache.spark.util.ArrayImplicits._
     Array.concat(results.toImmutableArraySeq: _*)
+  }
+
+  /**
+   * Return an array that contains all the elements
+   * the driver streams and deserializes from all S3 partition files.
+   */
+  def collectToS3(): Array[T] = withScope {
+    val conf = sc.getConf
+
+    require(conf.getBoolean("spark.s3.offload.enabled", defaultValue = false),
+      "S3 offload must be enabled with spark.s3.offload.enabled=true")
+
+    val bucket = conf.get("spark.s3.bucket")
+    val prefixBase = conf.get("spark.s3.prefix", "spark-offload")
+    val jobId = UUID.randomUUID().toString
+    val prefix = s"$prefixBase/$jobId"
+
+    // Each partition writes to S3 and returns its URI
+    val uris: Array[String] = this.mapPartitionsWithIndex { case (index, iter) =>
+      val uri = S3Utils.writePartition(bucket, prefix, index, iter)
+      Iterator(uri)
+    }.collect()
+
+    // Driver streams and deserializes all partition files from S3
+    S3Utils.readPartitions[T](bucket, uris)
   }
 
   /**

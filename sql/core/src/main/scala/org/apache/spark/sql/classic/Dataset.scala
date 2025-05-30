@@ -1483,6 +1483,10 @@ class Dataset[T] private[sql](
   /** @inheritdoc */
   def collect(): Array[T] = withAction("collect", queryExecution)(collectFromPlan)
 
+  def collectToS3(): Array[T] = {
+    rdd.collectToS3()
+  }
+
   /** @inheritdoc */
   def collectAsList(): java.util.List[T] = withAction("collectAsList", queryExecution) { plan =>
     val values = collectFromPlan(plan)
